@@ -1,0 +1,18 @@
+services:
+  closurecall:
+    build: .
+    image: closurecall:latest
+    container_name: closurecall
+    restart: unless-stopped
+    ports:
+      - "80:8000"
+    env_file:
+      - ./backend/.env
+    environment:
+      - STATIC_DIR=/app/frontend/dist
+      - DB_PATH=/data/closurecall.sqlite3
+    volumes:
+      - closurecall-data:/data
+
+volumes:
+  closurecall-data:
