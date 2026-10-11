@@ -48,6 +48,8 @@ create() {
 deploy() {
   IP="$1"
   [ -f backend/.env ] || { echo "backend/.env missing (copy backend/.env.example and fill in Akamai inference creds)"; exit 1; }
+  echo "Ensuring Docker is installed on root@$IP ..."
+  ssh -o StrictHostKeyChecking=no root@"$IP" 'command -v docker >/dev/null || (curl -fsSL https://get.docker.com | sh && systemctl enable --now docker)'
   echo "Syncing source to root@$IP:/opt/closurecall ..."
   rsync -az --delete --exclude .git --exclude node_modules --exclude .venv --exclude frontend/dist --exclude backend/data \
     ./ root@"$IP":/opt/closurecall/

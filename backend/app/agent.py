@@ -8,12 +8,17 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import sys
 import time
 from typing import Any, AsyncIterator
 
+from mcp import StdioServerParameters
+from mcp.client.stdio import stdio_client
 from pydantic import BaseModel, Field
 from strands import Agent, tool
 from strands.models.openai import OpenAIModel
+from strands.tools.mcp import MCPClient
 
 from . import config
 from .decision import deterministic_rationale
@@ -46,6 +51,8 @@ OPM operating-status ladder (least to most restrictive):
 """ + "\n".join(f"- {k}: {label} - {desc}" for k, label, desc in OPM_LADDER) + """
 
 Exercises: when the prompt says EXERCISE, the facility is being evaluated as if it were located at the given point so the manager can rehearse against live conditions. Treat that point as the facility's location; do not flag the relocation as a mismatch.
+
+Your data tools are served by the Closure Call MCP server over stdio. Call those tools. Do not write a script and do not call weather APIs yourself.
 
 Be concrete, be brief, never invent data that the tools did not return. If a source was unavailable, say so. Before the final assessment, write at most three short bullets of working notes, then produce the assessment."""
 
@@ -135,6 +142,16 @@ def _apply_assessment(rec: Recommendation, a: AgentAssessment, trace: list[dict]
     return rec
 
 
+def _mcp_client(ev: Evidence) -> MCPClient:
+    env = os.environ.copy()
+    env["CLOSURECALL_FACILITY_ID"] = ev.facility["id"]
+    env["CLOSURECALL_LAT"] = str(ev.lat)
+    env["CLOSURECALL_LON"] = str(ev.lon)
+    env["CLOSURECALL_DRILL"] = ev.drill_note or ""
+    params = StdioServerParameters(command=sys.executable, args=["-m", "app.mcp_server"], env=env, cwd=str(config.ROOT))
+    return MCPClient(lambda: stdio_client(params), startup_timeout=30, application_name="closurecall")
+
+
 def _prompt(ev: Evidence) -> str:
     return (f"Evaluate the closure posture for {ev.facility['name']} as of {ev.local_time} (phase: {ev.phase}). "
             + (f"EXERCISE: {ev.drill_note} Evaluate conditions at the exercise location ({ev.lat:.3f}, {ev.lon:.3f}) as the facility's location. " if ev.drill_note else "")
@@ -152,9 +169,21 @@ async def recommend_stream(ev: Evidence) -> AsyncIterator[dict]:
 
     trace: list[dict] = []
     t0 = time.time()
+    similar = []
     try:
-        agent = Agent(model=model, tools=_tools_for(ev), system_prompt=SYSTEM_PROMPT, callback_handler=None)
-        yield {"type": "status", "message": f"Strands agent started on {config.LLM_MODEL_ID} via Akamai Cloud inference"}
+        from .records import recall
+        similar = recall(f"{ev.facility['name']} {ev.result['posture'].value if ev.result else ''} {ev.local_time}")
+    except Exception:
+        similar = []
+    if similar:
+        trace.append({"type": "similar_decisions", "model": "hackathon-embedding", "host": "ws.akamai-workshops.com", "items": similar})
+    try:
+        client = _mcp_client(ev)
+        client.start()
+        tools = list(client.list_tools_sync())
+        yield {"type": "status", "message": f"Strands agent using MCP server closurecall ({len(tools)} tools) over stdio"}
+        yield {"type": "status", "message": f"Model {config.LLM_MODEL_ID} is Akamai hosted inference, not running on this machine"}
+        agent = Agent(model=model, tools=tools, system_prompt=SYSTEM_PROMPT, callback_handler=None)
         seen_tools: set[str] = set()
         async for event in agent.stream_async(_prompt(ev), structured_output_model=AgentAssessment):
             tu = event.get("current_tool_use")
@@ -175,13 +204,16 @@ async def recommend_stream(ev: Evidence) -> AsyncIterator[dict]:
                     txt = str(res)
                     so = _parse_assessment(txt)
                 if so is not None:
-                    trace.append({"type": "done", "seconds": round(time.time() - t0, 2), "tools_called": len(seen_tools)})
+                    trace.append({"type": "done", "seconds": round(time.time() - t0, 2), "tools_called": len(seen_tools), "transport": "mcp"})
                     rec = _apply_assessment(rec, so, trace)
-    except Exception as e:  # never let the LLM take down the demo
+        client.stop(None, None, None)
+    except Exception as e:  # never let the LLM or MCP take down the demo
         log.exception("agent failed; using deterministic rationale")
         trace.append({"type": "error", "message": f"{type(e).__name__}: {e}"})
         rec.agent_trace = trace
         yield {"type": "status", "message": f"Agent unavailable ({type(e).__name__}); using deterministic rationale."}
+    if similar and not any(t.get("type") == "similar_decisions" for t in rec.agent_trace):
+        rec.agent_trace = [{"type": "similar_decisions", "model": "hackathon-embedding", "host": "ws.akamai-workshops.com", "items": similar}] + rec.agent_trace
     yield {"type": "result", "recommendation": rec.model_dump(mode="json")}
 
 

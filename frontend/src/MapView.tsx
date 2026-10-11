@@ -1,9 +1,14 @@
-import { useEffect, useMemo } from 'react'
+import { memo, useEffect, useMemo } from 'react'
 import { MapContainer, TileLayer, WMSTileLayer, GeoJSON, CircleMarker, Tooltip, useMap } from 'react-leaflet'
 import L from 'leaflet'
 import type { Facility } from './api'
 
 const SEV_COLOR: Record<string, string> = { Extreme: '#ff5c5c', Severe: '#ff8a3d', Moderate: '#f5b84a', Minor: '#4cc2ff', Unknown: '#8b9bb0' }
+const WMS_PARAMS = { layers: '0,1', format: 'image/png', transparent: true }
+
+function alertStyle(feature: any) {
+  return { color: SEV_COLOR[feature?.properties?.severity] || '#8b9bb0', weight: 1.5, fillOpacity: 0.25 }
+}
 
 function FlyTo({ center, zoom }: { center: [number, number] | null; zoom: number }) {
   const map = useMap()
@@ -11,11 +16,21 @@ function FlyTo({ center, zoom }: { center: [number, number] | null; zoom: number
   return null
 }
 
-export default function MapView(props: {
+function Refit({ visible }: { visible: boolean }) {
+  const map = useMap()
+  useEffect(() => {
+    if (!visible) return
+    const id = window.setTimeout(() => map.invalidateSize(), 60)
+    return () => window.clearTimeout(id)
+  }, [visible, map])
+  return null
+}
+
+function MapView(props: {
   facilities: Facility[]; selectedId: string | null; onSelectFacility: (id: string) => void
   alerts: any | null; onDrill: (lat: number, lon: number, label: string) => void
   drill: { lat: number; lon: number; label: string } | null; focus: [number, number] | null; focusZoom: number
-  showWms: boolean
+  showWms: boolean; visible?: boolean
 }) {
   const polygons = useMemo(() => {
     if (!props.alerts) return null
@@ -27,19 +42,17 @@ export default function MapView(props: {
     <MapContainer center={[39.5, -96]} zoom={4} zoomControl={false} preferCanvas>
       <TileLayer url="https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}" attribution="Esri, HERE, Garmin, OpenStreetMap" maxZoom={16} />
       <TileLayer url="https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Reference/MapServer/tile/{z}/{y}/{x}" maxZoom={16} opacity={0.8} />
-      {props.showWms && (
-        <WMSTileLayer
-          url="https://mapservices.weather.noaa.gov/eventdriven/services/WWA/watch_warn_adv/MapServer/WMSServer"
-          params={{ layers: '0,1', format: 'image/png', transparent: true } as any}
-          opacity={0.5}
-          attribution="NWS Watches/Warnings/Advisories"
-        />
-      )}
+      <WMSTileLayer
+        url="https://mapservices.weather.noaa.gov/eventdriven/services/WWA/watch_warn_adv/MapServer/WMSServer"
+        params={WMS_PARAMS as any}
+        opacity={props.showWms ? 0.55 : 0}
+        attribution="NWS Watches/Warnings/Advisories"
+      />
       {polygons && (
         <GeoJSON
           key={props.alerts?.fetched_at}
           data={polygons}
-          style={(f: any) => ({ color: SEV_COLOR[f.properties.severity] || '#8b9bb0', weight: 1.5, fillOpacity: 0.25 })}
+          style={alertStyle}
           onEachFeature={(f: any, layer: L.Layer) => {
             const p = f.properties
             layer.bindTooltip(`<b>${p.event}</b><br/>${p.area}<br/><span style="color:#8b9bb0">${p.severity} / ${p.certainty} / ${p.urgency}</span>`, { sticky: true })
@@ -63,6 +76,9 @@ export default function MapView(props: {
         </CircleMarker>
       )}
       <FlyTo center={props.focus} zoom={props.focusZoom} />
+      <Refit visible={props.visible !== false} />
     </MapContainer>
   )
 }
+
+export default memo(MapView)

@@ -10,15 +10,21 @@ export function Ladder({ p }: { p: Posture }) {
   return <div className="ladder">{POSTURE_ORDER.map((q, i) => <div key={q} className={i <= idx ? `on ${p}` : ''} title={POSTURE_LABEL[q]} />)}</div>
 }
 
+export function placeName(name: string) {
+  const raw = name.split(' - ')[1]?.split(' (')[0]?.trim() || name
+  if (raw.startsWith('Boise')) return 'Boise'
+  return raw
+}
+
 export function FacilityList({ facilities, selectedId, onSelect }: { facilities: Facility[]; selectedId: string | null; onSelect: (id: string) => void }) {
   return (
     <div className="section">
-      <h3>Facilities</h3>
+      <h3>Buildings</h3>
       {facilities.map(f => (
-        <div key={f.id} className={`fac ${selectedId === f.id ? 'active' : ''}`} onClick={() => onSelect(f.id)}>
-          <div className="name">{f.name}</div>
-          <div className="meta">{f.type} · {f.agency} · {f.roster.total} staff ({f.roster.essential} essential)</div>
-        </div>
+        <button key={f.id} className={`fac ${selectedId === f.id ? 'active' : ''}`} onClick={() => onSelect(f.id)}>
+          <span className="name">{placeName(f.name)}</span>
+          <span className="meta">{f.roster.total} staff · {f.roster.essential} essential</span>
+        </button>
       ))}
     </div>
   )
@@ -26,8 +32,8 @@ export function FacilityList({ facilities, selectedId, onSelect }: { facilities:
 
 export function FacilityDetail({ f }: { f: Facility }) {
   return (
-    <div className="section">
-      <h3>Facility profile</h3>
+    <details className="section fold">
+      <summary>{f.address}</summary>
       <dl className="kv">
         <dt>Address</dt><dd>{f.address}</dd>
         <dt>Hours</dt><dd>{f.hours.open}-{f.hours.close} {f.hours.days.join('/')} ({f.timezone.split('/')[1]?.replace('_', ' ')})</dd>
@@ -37,30 +43,18 @@ export function FacilityDetail({ f }: { f: Facility }) {
         <dt>Roster</dt><dd>{f.roster.onsite_today} onsite · {f.roster.telework_today} telework · {f.roster.on_detail} on detail · {f.roster.leave} leave · {f.roster.accessibility_needs} accessibility</dd>
         <dt>Notes</dt><dd className="muted">{f.notes}</dd>
       </dl>
-    </div>
+    </details>
   )
 }
 
 export function AlertFeed({ alerts, onPick, busy }: { alerts: any | null; onPick: (a: AlertProps) => void; busy: boolean }) {
-  const [filter, setFilter] = useState<'warnings' | 'all'>('warnings')
   if (!alerts) return <div className="section"><h3>Live NWS alerts</h3><div className="muted small">Loading national feed…</div></div>
   let feats: AlertProps[] = alerts.features.map((f: any) => f.properties)
-  if (filter === 'warnings') feats = feats.filter(a => a.severity_rank >= 3 || /Warning/.test(a.event))
-  feats = feats.filter(a => !/Small Craft|Rip Current|Beach Hazards|Gale|Marine|Surf|Lake Wind|Hazardous Seas/.test(a.event))
+  feats = feats.filter(a => (a.severity_rank >= 3 || /Warning/.test(a.event)) && !/Small Craft|Rip Current|Beach Hazards|Gale|Marine|Surf|Lake Wind|Hazardous Seas/.test(a.event))
   feats.sort((a, b) => b.severity_rank - a.severity_rank || a.event.localeCompare(b.event))
-  const counts: Record<string, number> = {}
-  feats.forEach(a => { counts[a.event] = (counts[a.event] || 0) + 1 })
   return (
     <div className="section">
-      <h3>Live NWS alerts <span className="muted" style={{ textTransform: 'none', letterSpacing: 0 }}>· {alerts.count} active nationally · {fmtTime(alerts.fetched_at)}</span></h3>
-      <div className="row small" style={{ marginBottom: 8 }}>
-        <button className={`btn sm ${filter === 'warnings' ? 'primary' : 'ghost'}`} onClick={() => setFilter('warnings')}>Warnings</button>
-        <button className={`btn sm ${filter === 'all' ? 'primary' : 'ghost'}`} onClick={() => setFilter('all')}>All land</button>
-        <span className="muted">Click one to run an exercise there.</span>
-      </div>
-      <div className="row" style={{ marginBottom: 8 }}>
-        {Object.entries(counts).sort((a, b) => b[1] - a[1]).slice(0, 6).map(([k, v]) => <span key={k} className="chip">{k} <b>{v}</b></span>)}
-      </div>
+      <h3>Warnings <span className="muted" style={{ textTransform: 'none', letterSpacing: 0 }}>· {fmtTime(alerts.fetched_at)}</span></h3>
       <div style={{ maxHeight: 420, overflow: 'auto' }}>
         {feats.slice(0, 80).map(a => (
           <div key={a.id} className={`alert-item sev-${a.severity}`} onClick={() => !busy && onPick(a)} title={a.headline}>
@@ -114,6 +108,7 @@ export function Inputs({ inputs }: { inputs: Signal[] }) {
 export function RecommendationView({ rec }: { rec: Recommendation }) {
   const [copied, setCopied] = useState(false)
   const [showInputs, setShowInputs] = useState(false)
+  const similar = rec.agent_trace.find((t: any) => t.type === 'similar_decisions')
   const risks = rec.agent_trace.find((t: any) => t.type === 'key_risks')?.items as string[] | undefined
   const checklist = rec.agent_trace.find((t: any) => t.type === 'manager_checklist')?.items as string[] | undefined
   const disagreement = rec.agent_trace.find((t: any) => t.type === 'disagreement')
@@ -134,12 +129,13 @@ export function RecommendationView({ rec }: { rec: Recommendation }) {
       </div>
 
       <div className="section">
-        <h3>Rationale <span className="muted" style={{ textTransform: 'none', letterSpacing: 0 }}>· {rec.rationale_source === 'agent' ? 'Strands agent on Akamai inference' : 'deterministic engine'}</span></h3>
+        <h3>Rationale <span className="muted" style={{ textTransform: 'none', letterSpacing: 0 }}>· {rec.rationale_source === 'agent' ? 'Strands agent, tools over MCP, model on Akamai inference' : 'deterministic engine'}</span></h3>
         <div className="rationale">
           <button className="btn sm ghost copy" onClick={() => { navigator.clipboard.writeText(rec.rationale); setCopied(true); setTimeout(() => setCopied(false), 1500) }}>{copied ? 'copied' : 'copy'}</button>
           {rec.rationale}
         </div>
         {disagreement && <div className="small" style={{ marginTop: 8, color: 'var(--warn)' }}>Agent disagrees with engine: suggests <b>{POSTURE_LABEL[disagreement.agent_posture as Posture]}</b>. {disagreement.reason}</div>}
+        {similar && <div className="small muted" style={{ marginTop: 8 }}>Past decisions compared with Akamai embeddings ({similar.model}): {similar.items?.length ? similar.items.map((it: any) => `${it.facility_name.split(' - ')[0]} ${it.posture} (${Math.round(it.score * 100)}%)`).join(' · ') : 'none stored yet. The first recorded decision becomes the memory.'}</div>}
       </div>
 
       <div className="section">

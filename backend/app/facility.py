@@ -26,6 +26,25 @@ FACILITIES: list[dict] = [
         "road_feed_hint_url": "https://traveler.modot.org/map/",
         "hazard_profile": ["winter", "severe_storm", "flood"],
         "notes": "Public-facing county office; walk-in producers; parking lot drains poorly in heavy rain.",
+        "primary": False,
+    },
+    {
+        "id": "usda-gf-sc",
+        "name": "USDA Service Center - Great Falls (Cascade County)",
+        "agency": "FSA / NRCS / RD",
+        "type": "Service Center",
+        "address": "12 3rd St NW, Suite 300, Great Falls, MT 59404",
+        "state": "MT",
+        "lat": 47.5072,
+        "lon": -111.3015,
+        "timezone": "America/Denver",
+        "hours": {"open": "08:00", "close": "16:30", "days": ["Mon", "Tue", "Wed", "Thu", "Fri"]},
+        "river_gauges": [],
+        "road_feed": None,
+        "road_feed_hint": "Montana 511",
+        "road_feed_hint_url": "https://511mt.net/",
+        "hazard_profile": ["winter", "severe_storm", "flood"],
+        "notes": "Real Cascade County office. Currently inside a live Winter Storm Warning. The people to notify are this building's roster.",
         "primary": True,
     },
     {
@@ -90,7 +109,7 @@ def _roster_for(fid: str, n: int, seed: int) -> list[dict]:
     roster = []
     for i in range(n):
         role, essential, telework_eligible = ROLES[i % len(ROLES)]
-        if fid == "usda-kc-sc" and role in ("Animal Caretaker", "Biosecurity Lead", "Dispatcher"):
+        if fid in ("usda-kc-sc", "usda-gf-sc") and role in ("Animal Caretaker", "Biosecurity Lead", "Dispatcher"):
             role, essential, telework_eligible = "Program Technician", False, True
         if essential:  # emergency personnel are onsite or on leave; they don't telework or detail out casually
             status = rnd.choices(["onsite", "leave"], weights=[92, 8])[0]
@@ -104,7 +123,8 @@ def _roster_for(fid: str, n: int, seed: int) -> list[dict]:
             "essential": essential,
             "telework_eligible": telework_eligible,
             "status_today": status,  # onsite | telework_today | on_detail | leave
-            "detail_location": rnd.choice(["Regional Office - St. Louis", "Training - Fort Collins", "Field - Cass County"]) if status == "on_detail" else None,
+            "detail_location": rnd.choice(["State Office - Bozeman", "Training - Fort Collins", "Field - Teton County"]) if status == "on_detail" and fid == "usda-gf-sc" else (
+                rnd.choice(["Regional Office - St. Louis", "Training - Fort Collins", "Field - Cass County"]) if status == "on_detail" else None),
             "accessibility_needs": rnd.random() < 0.08,
             "commute_miles": rnd.randint(3, 48),
             "channels": {"email": True, "sms": rnd.random() < 0.9, "voice": rnd.random() < 0.3},
@@ -114,6 +134,7 @@ def _roster_for(fid: str, n: int, seed: int) -> list[dict]:
 
 
 ROSTERS: dict[str, list[dict]] = {
+    "usda-gf-sc": _roster_for("usda-gf-sc", 24, seed=47),
     "usda-kc-sc": _roster_for("usda-kc-sc", 26, seed=26),
     "usda-ars-ames": _roster_for("usda-ars-ames", 34, seed=34),
     "usda-fs-boise": _roster_for("usda-fs-boise", 22, seed=22),

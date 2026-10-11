@@ -15,14 +15,13 @@ export default function Records() {
     <div className="layout records">
       <div className="col">
         <div className="section">
-          <h3>Decision record · append-only</h3>
-          {verify && <div className={`chip ${verify.ok ? 'ok' : 'warn'}`}>{verify.ok ? `hash chain intact · ${verify.count} records` : `CHAIN BROKEN at seq ${verify.first_break_seq}`}</div>}
-          {verify?.head && <div className="hash" style={{ marginTop: 6 }}>head {verify.head}</div>}
+          <h3>Records</h3>
+          {verify && <div className={`chip ${verify.ok ? 'ok' : 'warn'}`}>{verify.ok ? `${verify.count} saved · chain intact` : `Chain broken at #${verify.first_break_seq}`}</div>}
         </div>
         <div className="section">
           {list.length === 0 && <div className="empty">No decisions recorded yet.</div>}
           {list.map(r => (
-            <div key={r.id} className={`fac ${sel?.id === r.id ? 'active' : ''}`} onClick={() => api.record(r.id).then(setSel)}>
+            <div key={r.id} className={`fac record ${sel?.id === r.id ? 'active' : ''}`} onClick={() => api.record(r.id).then(setSel)}>
               <div className="row" style={{ justifyContent: 'space-between' }}>
                 <span className="mono muted">#{r.seq} · {fmtTime(r.created_at)}</span>
                 {r.override ? <span className="chip warn">override</span> : <span className="chip ok">as recommended</span>}
@@ -39,9 +38,8 @@ export default function Records() {
             <div className="section">
               <h2>Replay: {sel.facility_name}</h2>
               <div className="row small muted">
-                <span>record <code>{sel.id}</code></span><span>· created {fmtTime(sel.created_at)}</span><span>· seq #{sel.seq}</span>
+                <span>#{sel.seq}</span><span>· {fmtTime(sel.created_at)}</span><span>· {sel.decided_by}</span>
               </div>
-              <div className="hash" style={{ marginTop: 6 }}>hash {sel.hash}<br />prev {sel.prev_hash || '(genesis)'}</div>
               <div className="steps" style={{ marginTop: 12 }}>
                 <div className={tab === 'known' ? 'on' : ''} onClick={() => setTab('known')} style={{ cursor: 'pointer' }}>1 · What was known</div>
                 <div className={tab === 'decided' ? 'on' : ''} onClick={() => setTab('decided')} style={{ cursor: 'pointer' }}>2 · What was recommended & decided</div>

@@ -6,9 +6,12 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import sqlite3
 import uuid
 from contextlib import contextmanager
+
+import httpx
 
 from . import config
 from .models import DecisionRecord, NotificationPackage, Posture, Recommendation, now_iso
@@ -32,6 +35,14 @@ CREATE TABLE IF NOT EXISTS decisions (
 );
 CREATE TRIGGER IF NOT EXISTS decisions_no_update BEFORE UPDATE ON decisions BEGIN SELECT RAISE(ABORT, 'decision records are append-only'); END;
 CREATE TRIGGER IF NOT EXISTS decisions_no_delete BEFORE DELETE ON decisions BEGIN SELECT RAISE(ABORT, 'decision records are append-only'); END;
+CREATE TABLE IF NOT EXISTS embeddings (
+  record_id TEXT PRIMARY KEY,
+  created_at TEXT NOT NULL,
+  facility_name TEXT NOT NULL,
+  posture TEXT NOT NULL,
+  text TEXT NOT NULL,
+  vector TEXT NOT NULL
+);
 """
 
 
@@ -69,9 +80,56 @@ def append(rec: Recommendation, decided_posture: Posture, decided_by: str, overr
             (rid, created, rec.facility_id, rec.facility_name, rec.posture.value, decided_posture.value, decided_by, int(override), override_reason,
              json.dumps(rec_json), json.dumps(not_json) if not_json else None, prev, h),
         )
-        return DecisionRecord(id=rid, seq=cur.lastrowid, created_at=created, facility_id=rec.facility_id, facility_name=rec.facility_name,
-                              recommended_posture=rec.posture, decided_posture=decided_posture, decided_by=decided_by, override=override,
-                              override_reason=override_reason, recommendation=rec, notification=notification, prev_hash=prev, hash=h)
+        record = DecisionRecord(id=rid, seq=cur.lastrowid, created_at=created, facility_id=rec.facility_id, facility_name=rec.facility_name,
+                                recommended_posture=rec.posture, decided_posture=decided_posture, decided_by=decided_by, override=override,
+                                override_reason=override_reason, recommendation=rec, notification=notification, prev_hash=prev, hash=h)
+    remember(record)
+    return record
+
+
+def _embed(text: str) -> list[float] | None:
+    if not config.LLM_ENABLED:
+        return None
+    try:
+        r = httpx.post(f"{config.LLM_BASE_URL}/embeddings", headers={"Authorization": f"Bearer {config.LLM_API_KEY}"},
+                       json={"model": os_embed_model(), "input": text[:2000]}, timeout=20)
+        r.raise_for_status()
+        return r.json()["data"][0]["embedding"]
+    except Exception:
+        return None
+
+
+def os_embed_model() -> str:
+    import os
+    return os.getenv("LLM_EMBEDDING_MODEL_ID", "hackathon-embedding")
+
+
+def remember(record: DecisionRecord) -> None:
+    vec = _embed(f"{record.facility_name}. {record.decided_posture.value}. {record.recommendation.rationale}")
+    if not vec:
+        return
+    with _conn() as c:
+        c.execute("INSERT OR REPLACE INTO embeddings (record_id, created_at, facility_name, posture, text, vector) VALUES (?,?,?,?,?,?)",
+                  (record.id, record.created_at, record.facility_name, record.decided_posture.value, record.recommendation.rationale[:500], json.dumps(vec)))
+
+
+def recall(text: str, k: int = 3) -> list[dict]:
+    """Nearest past decisions by cosine similarity on Akamai's embedding model."""
+    query = _embed(text)
+    if not query:
+        return []
+    with _conn() as c:
+        rows = c.execute("SELECT record_id, created_at, facility_name, posture, text, vector FROM embeddings").fetchall()
+    scored = []
+    qn = math.sqrt(sum(x * x for x in query)) or 1
+    for row in rows:
+        vec = json.loads(row["vector"])
+        vn = math.sqrt(sum(x * x for x in vec)) or 1
+        score = sum(a * b for a, b in zip(query, vec)) / (qn * vn)
+        scored.append({"record_id": row["record_id"], "created_at": row["created_at"], "facility_name": row["facility_name"],
+                       "posture": row["posture"], "text": row["text"], "score": round(score, 3)})
+    scored.sort(key=lambda s: -s["score"])
+    return scored[:k]
 
 
 def _row_to_record(r: sqlite3.Row) -> DecisionRecord:

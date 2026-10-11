@@ -47,7 +47,9 @@ class DecideRequest(BaseModel):
 @app.get("/api/health")
 async def health():
     return {"ok": True, "llm_enabled": config.LLM_ENABLED, "llm_model": config.LLM_MODEL_ID if config.LLM_ENABLED else None,
-            "llm_host": config.LLM_BASE_URL.split("/")[2] if config.LLM_ENABLED else None, "airnow": bool(config.AIRNOW_API_KEY)}
+            "llm_host": config.LLM_BASE_URL.split("/")[2] if config.LLM_ENABLED else None,
+            "embedding_model": "hackathon-embedding" if config.LLM_ENABLED else None,
+            "agent_tools": "mcp", "airnow": bool(config.AIRNOW_API_KEY)}
 
 
 @app.get("/api/facilities")
@@ -186,4 +188,4 @@ if config.STATIC_DIR.exists():
         target = config.STATIC_DIR / path
         if path and target.exists() and target.is_file():
             return FileResponse(target)
-        return FileResponse(config.STATIC_DIR / "index.html")
+        return FileResponse(config.STATIC_DIR / "index.html", headers={"Cache-Control": "no-cache"})

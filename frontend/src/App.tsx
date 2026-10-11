@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { api, evaluateStream, POSTURE_LABEL, POSTURE_ORDER, type AlertProps, type DecisionRecord, type Facility, type NotificationPackage, type Posture, type Recommendation, type Signal } from './api'
 import MapView from './MapView'
-import { AgentTrace, AlertFeed, FacilityDetail, FacilityList, NotificationView, PostureBadge, RecommendationView } from './Panels'
+import { AgentTrace, AlertFeed, FacilityDetail, FacilityList, NotificationView, PostureBadge, RecommendationView, placeName } from './Panels'
 import Records, { Thresholds } from './Records'
 
 type View = 'ops' | 'records' | 'thresholds'
@@ -9,6 +9,7 @@ type Drill = { lat: number; lon: number; label: string } | null
 
 export default function App() {
   const [view, setView] = useState<View>('ops')
+  const [pane, setPane] = useState<'map' | 'site' | 'decision'>('map')
   const [health, setHealth] = useState<any>(null)
   const [facilities, setFacilities] = useState<Facility[]>([])
   const [selectedId, setSelectedId] = useState<string | null>(null)
@@ -45,27 +46,35 @@ export default function App() {
   useEffect(() => { if (selectedId) api.facility(selectedId).then(setFacility) }, [selectedId])
 
   const resetRun = () => { setStatus([]); setTools([]); setText(''); setEvidence(null); setRec(null); setPkg(null); setDecided(null); setOverrideReason(''); setRecord(null); setErr(null) }
+  const resetRef = useRef(resetRun)
+  resetRef.current = resetRun
+  const facilitiesRef = useRef(facilities)
+  facilitiesRef.current = facilities
 
-  const selectFacility = (id: string) => {
-    setSelectedId(id); setDrill(null); resetRun()
-    const f = facilities.find(x => x.id === id); if (f) { setFocus([f.lat, f.lon]); setFocusZoom(9) }
-  }
+  const selectFacility = useCallback((id: string) => {
+    setSelectedId(id); setDrill(null); resetRef.current()
+    const f = facilitiesRef.current.find(x => x.id === id); if (f) { setFocus([f.lat, f.lon]); setFocusZoom(9) }
+  }, [])
 
   const runEvaluation = useCallback(async (d: Drill) => {
     if (!selectedId) return
-    resetRun(); setRunning(true)
+    resetRun(); setRunning(true); setPane('decision')
     const ac = new AbortController(); abortRef.current = ac
     try {
       await evaluateStream(
         { facility_id: selectedId, lat: d?.lat, lon: d?.lon, drill_note: d ? `Tabletop exercise: ${facility?.name ?? 'facility'} profile and roster evaluated against live conditions at ${d.label}.` : undefined },
         e => {
+          if (ac.signal.aborted) return
           if (e.type === 'evidence') setEvidence({ inputs: e.inputs, engine_posture: e.engine_posture, phase: e.phase })
           else if (e.type === 'status') setStatus(s => [...s, e.message])
           else if (e.type === 'tool') setTools(t => [...t, e.name])
           else if (e.type === 'text') setText(t => t + e.delta)
           else if (e.type === 'result') setRec(e.recommendation)
         }, ac.signal)
-    } catch (ex: any) { if (ex.name !== 'AbortError') setErr(String(ex.message || ex)) }
+    } catch (ex: any) {
+      if (ex?.name === 'AbortError') { resetRef.current(); setDrill(null) }
+      else setErr(String(ex.message || ex))
+    }
     finally { setRunning(false) }
   }, [selectedId, facility])
 
@@ -83,7 +92,12 @@ export default function App() {
     setDrill(d); setFocus([lat, lon]); setFocusZoom(8); runEvaluation(d)
   }
 
-  const onDrillFromMap = (lat: number, lon: number, label: string) => { const d = { lat, lon, label }; setDrill(d); runEvaluation(d) }
+  const stopRun = () => { abortRef.current?.abort() }
+  const runRef = useRef(runEvaluation)
+  runRef.current = runEvaluation
+  const onDrillFromMap = useCallback((lat: number, lon: number, label: string) => {
+    const d = { lat, lon, label }; setDrill(d); runRef.current(d)
+  }, [])
 
   const buildNotification = async (p?: Posture) => {
     if (!rec) return
@@ -105,18 +119,18 @@ export default function App() {
   const step = record ? 4 : pkg ? 3 : rec ? 2 : 1
 
   return (
-    <div className="app">
+    <div className={`app pane-${pane}`}>
       <header className="topbar">
-        <div className="brand"><span className="dot" />Closure Call</div>
+        <div className="brand">Closure Call</div>
         <nav className="nav">
-          <button className={view === 'ops' ? 'active' : ''} onClick={() => setView('ops')}>Operations</button>
-          <button className={view === 'records' ? 'active' : ''} onClick={() => setView('records')}>Decision record</button>
-          <button className={view === 'thresholds' ? 'active' : ''} onClick={() => setView('thresholds')}>Thresholds</button>
+          <button className={view === 'ops' ? 'active' : ''} onClick={() => setView('ops')}>Live</button>
+          <button className={view === 'records' ? 'active' : ''} onClick={() => setView('records')}>Record</button>
+          <button className={view === 'thresholds' ? 'active' : ''} onClick={() => setView('thresholds')}>Rules</button>
         </nav>
         <div className="right">
-          <span className="chip">NWS api.weather.gov · live</span>
-          <span className="chip">Strands Agents SDK</span>
-          {health && <span className={`chip ${health.llm_enabled ? 'ok' : 'warn'}`}>{health.llm_enabled ? `Akamai Cloud inference · ${health.llm_model}` : 'LLM off · deterministic'}</span>}
+          <span className={`chip ${health?.llm_enabled ? 'ok' : 'warn'}`} title="National Weather Service data, Strands agent over MCP, Akamai hosted inference">
+            {health?.llm_enabled ? 'Live data · agent on' : health ? 'Agent off' : 'Connecting'}
+          </span>
         </div>
       </header>
 
@@ -124,39 +138,52 @@ export default function App() {
       {view === 'thresholds' && <Thresholds />}
       {view === 'ops' && (
         <div className="layout">
-          <aside className="col">
+          <aside className={`col pane-site ${pane === 'site' ? 'on' : ''}`}>
             <FacilityList facilities={facilities} selectedId={selectedId} onSelect={selectFacility} />
-            {facility && <FacilityDetail f={facility} />}
             <AlertFeed alerts={alerts} onPick={pickAlert} busy={running} />
+            {facility && <FacilityDetail f={facility} />}
           </aside>
 
-          <main className="mapcol">
+          <main className={`mapcol pane-map ${pane === 'map' ? 'on' : ''}`}>
             <MapView facilities={facilities} selectedId={selectedId} onSelectFacility={selectFacility} alerts={alerts}
-              onDrill={onDrillFromMap} drill={drill} focus={focus} focusZoom={focusZoom} showWms={showWms} />
+              onDrill={onDrillFromMap} drill={drill} focus={focus} focusZoom={focusZoom} showWms={showWms} visible={pane === 'map'} />
             <div className="map-overlay">
-              <button className="btn primary" disabled={!selectedId || running} onClick={() => { setDrill(null); runEvaluation(null) }}>
-                {running && !drill ? 'Evaluating…' : 'Evaluate facility now'}
-              </button>
-              {drill && <button className="btn" disabled={running} onClick={() => runEvaluation(drill)}>Re-run exercise</button>}
-              {drill && <button className="btn ghost" disabled={running} onClick={() => { setDrill(null); resetRun() }}>Clear exercise</button>}
-              <button className="btn ghost sm" onClick={() => setShowWms(!showWms)}>{showWms ? 'Hide' : 'Show'} NWS WWA layer</button>
+              {running ? (
+                <button className="btn stop" onClick={stopRun}>Stop</button>
+              ) : (
+                <button className="btn primary" disabled={!selectedId} onClick={() => { setDrill(null); runEvaluation(null) }}>
+                  Evaluate {facility ? placeName(facility.name) : 'site'}
+                </button>
+              )}
+              {drill && !running && <button className="btn" onClick={() => runEvaluation(drill)}>Run again</button>}
+              {drill && !running && <button className="btn ghost" onClick={() => { setDrill(null); resetRun() }}>Clear</button>}
+              <button className="btn ghost sm" onClick={() => setShowWms(!showWms)}>{showWms ? 'Hide layer' : 'Show layer'}</button>
             </div>
-            <div className="map-legend"><b>Map:</b> NWS watches/warnings/advisories (WMS) · outlined polygons = warning-tier alerts from api.weather.gov (click to exercise) · blue = facilities</div>
+            <ul className="map-legend" aria-label="Map colors">
+              <li><i style={{ background: '#ff0000' }} />Tornado</li>
+              <li><i style={{ background: '#ffff00' }} />Thunderstorm</li>
+              <li><i style={{ background: '#397939' }} />Flash flood</li>
+              <li><i style={{ background: '#0eeb0e' }} />Flood</li>
+              <li><i style={{ background: '#eb69aa' }} />Winter</li>
+              <li><i style={{ background: '#cb9d2a' }} />Wind</li>
+              <li><i style={{ background: '#2c872c' }} />Coast</li>
+              <li><i style={{ background: '#4cc2ff' }} />USDA facility</li>
+            </ul>
           </main>
 
-          <section className="col">
+          <section className={`col pane-decision ${pane === 'decision' ? 'on' : ''}`}>
             <div className="section">
-              <div className="steps">
-                <div className={step > 1 ? 'done' : step === 1 ? 'on' : ''}>1 Evaluate</div>
-                <div className={step > 2 ? 'done' : step === 2 ? 'on' : ''}>2 Notify</div>
-                <div className={step > 3 ? 'done' : step === 3 ? 'on' : ''}>3 Decide</div>
-                <div className={step === 4 ? 'done' : ''}>4 Recorded</div>
+              <div className="steps" aria-label="Progress">
+                <div className={step > 1 ? 'done' : step === 1 ? 'on' : ''}>Weather</div>
+                <div className={step > 2 ? 'done' : step === 2 ? 'on' : ''}>Notice</div>
+                <div className={step > 3 ? 'done' : step === 3 ? 'on' : ''}>Decision</div>
+                <div className={step === 4 ? 'done' : ''}>Record</div>
               </div>
               {err && <div className="small" style={{ color: 'var(--danger)', marginBottom: 8 }}>{err}</div>}
-              {!rec && !running && <div className="muted small">Pick a facility and press <b>Evaluate facility now</b>, or click a live warning on the map / in the feed to run a tabletop exercise against real conditions.</div>}
+              {!rec && !running && <p className="lead">Pick a building, then evaluate it. Or choose a storm on the left to test that warning against this staff.</p>}
               {(running || tools.length > 0 || status.length > 0) && (
                 <>
-                  <h3>Agent run{evidence && <span className="muted" style={{ textTransform: 'none', letterSpacing: 0 }}> · {evidence.inputs.length} inputs gathered · engine says <PostureBadge p={evidence.engine_posture} /></span>}</h3>
+                  <h3>Agent run{evidence && <span className="muted" style={{ textTransform: 'none', letterSpacing: 0 }}> · {evidence.inputs.length} inputs gathered{running ? '' : <> · <PostureBadge p={evidence.engine_posture} /></>}</span>}</h3>
                   <AgentTrace tools={tools} text={text} status={status} running={running} />
                 </>
               )}
@@ -168,10 +195,10 @@ export default function App() {
               <div className="section">
                 <h3>Human decision</h3>
                 <div className="row" style={{ marginBottom: 8 }}>
-                  <select value={decided ?? rec.posture} onChange={e => { const p = e.target.value as Posture; setDecided(p); if (pkg) buildNotification(p) }} style={{ width: 'auto' }}>
+                  <select className="grow" value={decided ?? rec.posture} onChange={e => { const p = e.target.value as Posture; setDecided(p); if (pkg) buildNotification(p) }}>
                     {POSTURE_ORDER.map(p => <option key={p} value={p}>{POSTURE_LABEL[p]}{p === rec.posture ? ' (recommended)' : ''}</option>)}
                   </select>
-                  <input value={decidedBy} onChange={e => setDecidedBy(e.target.value)} style={{ width: 200 }} placeholder="Decided by" />
+                  <input className="grow" value={decidedBy} onChange={e => setDecidedBy(e.target.value)} placeholder="Decided by" />
                 </div>
                 {(decided ?? rec.posture) !== rec.posture && (
                   <textarea rows={2} placeholder="Override reason (required; goes in the record)" value={overrideReason} onChange={e => setOverrideReason(e.target.value)} style={{ marginBottom: 8 }} />
@@ -188,6 +215,13 @@ export default function App() {
             {pkg && <NotificationView pkg={pkg} />}
           </section>
         </div>
+      )}
+      {view === 'ops' && (
+        <nav className="phone-nav">
+          <button className={pane === 'map' ? 'on' : ''} onClick={() => setPane('map')}>Map</button>
+          <button className={pane === 'site' ? 'on' : ''} onClick={() => setPane('site')}>Buildings</button>
+          <button className={pane === 'decision' ? 'on' : ''} onClick={() => setPane('decision')}>{running ? 'Running…' : 'Result'}</button>
+        </nav>
       )}
     </div>
   )
